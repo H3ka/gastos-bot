@@ -5,12 +5,17 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from datetime import datetime
 import os
 import re
+import json
 
 # conexión Google Sheets
 scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
 
-creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
+credenciales_json = os.getenv("GOOGLE_CREDENTIALS")
+credenciales_dict = json.loads(credenciales_json)
+
+creds = ServiceAccountCredentials.from_json_keyfile_dict(credenciales_dict, scope)
+
 client = gspread.authorize(creds)
 
 # estado temporal
