@@ -1,4 +1,0 @@
-# flyctl launch added from .gitignore
-**\credenciales.json
-**\.env
-fly.toml
