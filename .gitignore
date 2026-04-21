@@ -1,2 +1,5 @@
 credenciales.json
 .env
+/__pycache__/db.cpython-314.pyc
+/__pycache__/repo.cpython-314.pyc
+/__pycache__/service.cpython-314.pyc
