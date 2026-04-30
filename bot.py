@@ -1,279 +1,347 @@
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from datetime import datetime
-from config import get_token, get_google_credentials
-import re
-import traceback
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
-try:
-    print("🔥 Iniciando bot...")
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler,
+    MessageHandler, CallbackQueryHandler,
+    filters, ContextTypes
+)
 
-    # conexión Google Sheets
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
+from config import get_token, get_google_credentials, get_sheet
 
-    creds = get_google_credentials(scope, ServiceAccountCredentials)
-    client = gspread.authorize(creds)
+print("🔥 Iniciando bot...")
 
-    # estado temporal
-    user_data_temp = {}
+# ================= GOOGLE =================
 
-    # mapa de métodos
-    metodos = {
-        "1": "BBVA",
-        "2": "AMEX",
-        "3": "NU",
-        "4": "BANAMEX",
-        "5": "MERCADOPAGO",
-        "6": "MERCADOPRESTAMO",
-        "7": "DIDICARD",
-        "8": "SUBURBIA"
-    }
+creds = get_google_credentials()
+client = gspread.authorize(creds)
 
-    # meses
-    meses = {
-        "01": "ENERO", "02": "FEBRERO", "03": "MARZO",
-        "04": "ABRIL", "05": "MAYO", "06": "JUNIO",
-        "07": "JULIO", "08": "AGOSTO", "09": "SEPTIEMBRE",
-        "10": "OCTUBRE", "11": "NOVIEMBRE", "12": "DICIEMBRE"
-    }
+sheet = client.open(get_sheet())
+ws_mov = sheet.worksheet("MOVIMIENTOS")
+ws_pag = sheet.worksheet("PAGOS")
+ws_tar = sheet.worksheet("TARJETAS")
 
-    MESES_LIST = [
-        "ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO",
-        "JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE"
-    ]
+# ================= STATE =================
 
-    # tarjetas
-    tarjetas = [
-        "BBVA", "AMEX", "NU", "BANAMEX",
-        "MERCADOPAGO", "MERCADOPRESTAMO", "DIDICARD","SUBURBIA"
-    ]
+user_state = {}
 
-    # ---------------- UTILIDADES ----------------
+# ================= TARJETAS =================
 
-    def obtener_mes_actual():
-        return meses[datetime.now().strftime("%m")]
+def get_tarjetas():
+    rows = ws_tar.get_all_values()[1:]
+    data = {}
 
-    def obtener_mes_siguiente(mes_actual, offset):
-        idx = MESES_LIST.index(mes_actual)
-        return MESES_LIST[(idx + offset) % 12]
+    for r in rows:
+        data[r[0].strip().upper()] = {
+            "corte": int(r[1]),
+            "pago": int(r[2])
+        }
 
-    def agregar_gasto(metodo, mes, monto):
-        worksheet = client.open("gastos-bot").worksheet(metodo)
+    return data
 
-        headers = worksheet.row_values(3)
-        headers_limpios = [h.strip().upper() for h in headers]
+# ================= CICLO BANCARIO REAL =================
 
-        col_index = headers_limpios.index(mes) + 1
+def obtener_corte_actual(tarjeta, tarjetas):
+    hoy = datetime.now().date()
+    dia = tarjetas[tarjeta]["corte"]
 
-        col_values = worksheet.col_values(col_index)
-
-        fila = 2
-        for i, val in enumerate(col_values[1:], start=2):
-            if val == "":
-                fila = i
-                break
+    if hoy.day >= dia:
+        return datetime(hoy.year, hoy.month, dia).date()
+    else:
+        if hoy.month == 1:
+            return datetime(hoy.year - 1, 12, dia).date()
         else:
-            fila = len(col_values) + 1
+            return datetime(hoy.year, hoy.month - 1, dia).date()
 
-        worksheet.update_cell(fila, col_index, monto)
 
-    # ---------------- BOT ----------------
+def obtener_corte_anterior(corte_actual):
+    if corte_actual.month == 1:
+        return corte_actual.replace(year=corte_actual.year - 1, month=12)
+    else:
+        return corte_actual.replace(month=corte_actual.month - 1)
 
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("💸 Envíame solo el monto (ej: 1200)")
 
-    async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def rango_ciclo(tarjeta, tarjetas):
+    hoy = datetime.now().date()
+    dia_corte = tarjetas[tarjeta]["corte"]
 
-        if not update.message:
-            return
+    # ---------- último corte ----------
+    if hoy.day >= dia_corte:
+        ultimo_corte = datetime(hoy.year, hoy.month, dia_corte).date()
+    else:
+        if hoy.month == 1:
+            ultimo_corte = datetime(hoy.year - 1, 12, dia_corte).date()
+        else:
+            ultimo_corte = datetime(hoy.year, hoy.month - 1, dia_corte).date()
 
-        user_id = update.message.from_user.id
-        texto = update.message.text.strip()
+    # ---------- siguiente corte ----------
+    if ultimo_corte.month == 12:
+        siguiente_corte = datetime(ultimo_corte.year + 1, 1, dia_corte).date()
+    else:
+        siguiente_corte = datetime(ultimo_corte.year, ultimo_corte.month + 1, dia_corte).date()
 
-        # ---------------- FLUJO ----------------
+    inicio = ultimo_corte + timedelta(days=1)
+    fin = siguiente_corte
 
-        if user_id in user_data_temp:
-            estado = user_data_temp[user_id].get("estado")
+    return inicio, fin
 
-            # -------- TIPO --------
-            if estado == "tipo":
-                if texto == "1":
-                    user_data_temp[user_id]["tipo"] = "contado"
-                    user_data_temp[user_id]["estado"] = "metodo"
+def fecha_limite(tarjeta, tarjetas):
+    corte = obtener_corte_actual(tarjeta, tarjetas)
 
-                    await update.message.reply_text(
-                        "💳 Método:\n1 BBVA\n2 AMEX\n3 NU\n4 BANAMEX\n5 MERCADOPAGO\n6 MERCADOPRESTAMO\n7 DIDICARD\n8 SUBURBIA"
-                    )
+    # 👉 mover al siguiente ciclo
+    siguiente_corte = corte + relativedelta(months=1)
 
-                elif texto == "2":
-                    user_data_temp[user_id]["tipo"] = "msi"
-                    user_data_temp[user_id]["estado"] = "meses"
+    return siguiente_corte + timedelta(days=tarjetas[tarjeta]["pago"])
 
-                    await update.message.reply_text("📆 ¿A cuántos meses?")
+# ================= DATA =================
 
-                else:
-                    await update.message.reply_text("❌ Opción inválida")
+def get_movimientos():
+    rows = ws_mov.get_all_values()[1:]
+    data = []
 
-                return
-
-            # -------- MESES --------
-            if estado == "meses":
-                if not texto.isdigit():
-                    await update.message.reply_text("❌ Ingresa un número válido")
-                    return
-
-                meses_val = int(texto)
-
-                if meses_val <= 0:
-                    await update.message.reply_text("❌ Meses inválidos")
-                    return
-
-                user_data_temp[user_id]["meses"] = meses_val
-                user_data_temp[user_id]["estado"] = "metodo"
-
-                await update.message.reply_text(
-                    "💳 Método:\n1 BBVA\n2 AMEX\n3 NU\n4 BANAMEX\n5 MERCADOPAGO\n6 MERCADOPRESTAMO\n7 DIDICARD\n8 SUBURBIA"
-                )
-                return
-
-            # -------- MÉTODO --------
-            if estado == "metodo":
-                if texto not in metodos:
-                    await update.message.reply_text("⚠️ Elige un número válido")
-                    return
-
-                metodo = metodos[texto]
-                data = user_data_temp[user_id]
-
-                monto = data["monto"]
-                tipo = data["tipo"]
-                mes_actual = obtener_mes_actual()
-
-                try:
-                    if tipo == "contado":
-                        agregar_gasto(metodo, mes_actual, monto)
-
-                    elif tipo == "msi":
-                        meses_val = data["meses"]
-                        monto_mensual = round(monto / meses_val, 2)
-
-                        for i in range(meses_val):
-                            mes = obtener_mes_siguiente(mes_actual, i)
-                            agregar_gasto(metodo, mes, monto_mensual)
-
-                    del user_data_temp[user_id]
-
-                    await update.message.reply_text(
-                        f"✅ Guardado en {metodo}\n💰 ${monto}\n El pago fue registrado a {tipo}"
-                    )
-
-                except Exception as e:
-                    if user_id in user_data_temp:
-                        del user_data_temp[user_id]
-
-                    await update.message.reply_text("❌ Error al guardar")
-                    print(e)
-
-                return
-
-        # ---------------- NUEVO MONTO ----------------
-
+    for r in rows:
         try:
-            monto = float(texto)
+            data.append({
+                "fecha": datetime.strptime(r[0], "%Y-%m-%d").date(),
+                "tarjeta": r[1].strip().upper(),
+                "monto": float(r[2].replace(",", ".")),
+                "tipo": r[3],
+                "meses": int(r[4])
+            })
+        except:
+            continue
 
-            user_data_temp[user_id] = {
-                "monto": monto,
-                "estado": "tipo"
+    return data
+
+
+def get_pagos():
+    rows = ws_pag.get_all_values()[1:]
+    data = []
+
+    for r in rows:
+        try:
+            data.append({
+                "fecha": datetime.strptime(r[0], "%Y-%m-%d").date(),
+                "tarjeta": r[1].strip().upper(),
+                "monto": float(r[2].replace(",", ".")),
+            })
+        except:
+            continue
+
+    return data
+
+# ================= LOGICA =================
+
+def calcular_resumen():
+    tarjetas = get_tarjetas()
+    movs = get_movimientos()
+    pagos = get_pagos()
+
+    resultado = {}
+
+    for t in tarjetas:
+        inicio, fin = rango_ciclo(t, tarjetas)
+
+        total = 0
+
+        for m in movs:
+            if m["tarjeta"] != t:
+                continue
+
+            # CONTADO
+            if m["tipo"] == "CONTADO":
+                if inicio <= m["fecha"] <= fin:
+                    total += m["monto"]
+
+            # MSI REAL
+            else:
+                mensual = m["monto"] / m["meses"]
+
+                for i in range(m["meses"]):
+                    fecha_msi = m["fecha"] + relativedelta(months=i)
+
+                    if inicio <= fecha_msi <= fin:
+                        total += mensual
+
+        pagado = sum(
+            p["monto"] for p in pagos
+            if p["tarjeta"] == t and inicio <= p["fecha"] < fin
+        )
+
+        pendiente = max(0, total - pagado)
+
+        if total > 0 or pagado > 0:
+            resultado[t] = {
+                "total": round(total, 2),
+                "pagado": round(pagado, 2),
+                "pendiente": round(pendiente, 2),
+                "fecha": fecha_limite(t, tarjetas)
             }
 
-            await update.message.reply_text(
-                "¿Tipo de compra?\n1. Contado\n2. MSI"
-            )
+    return resultado
 
-        except:
-            await update.message.reply_text("⚠️ Ingresa solo el monto")
+# ================= UI BOTONES =================
 
-    # ---------------- RESUMEN ----------------
+def teclado_tarjetas():
+    tarjetas = list(get_tarjetas().keys())
 
-    async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            if not update.message:
+    keyboard = []
+    row = []
+
+    for t in tarjetas:
+        row.append(InlineKeyboardButton(t, callback_data=f"tarjeta|{t}"))
+
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+# ================= BOT =================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_state.clear()
+    await update.message.reply_text("💸 Mándame un monto")
+
+async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = calcular_resumen()
+
+    if not data:
+        await update.message.reply_text("Sin movimientos")
+        return
+
+    msg = "📊 Resumen\n\n"
+    total = 0
+
+    for t, d in data.items():
+        msg += (
+            f"{t}\n"
+            f"Total: ${d['total']}\n"
+            f"Pagado: ${d['pagado']}\n"
+            f"Pendiente: ${d['pendiente']}\n"
+            f"Límite: {d['fecha']}\n\n"
+        )
+        total += d["pendiente"]
+
+    msg += f"💰 Total: ${round(total, 2)}"
+
+    await update.message.reply_text(msg)
+
+async def pagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        monto = float(context.args[0])
+    except:
+        await update.message.reply_text("Uso: /pagar 1000")
+        return
+
+    user_state["estado"] = "pago"
+    user_state["monto"] = monto
+
+    await update.message.reply_text(
+        "Selecciona tarjeta:",
+        reply_markup=teclado_tarjetas()
+    )
+
+async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("|")
+
+    if data[0] == "tarjeta":
+        tarjeta = data[1]
+
+        # ===== PAGO =====
+        if user_state.get("estado") == "pago":
+            resumen = calcular_resumen()
+            deuda = resumen.get(tarjeta, {}).get("pendiente", 0)
+
+            if deuda <= 0:
+                await query.edit_message_text("⚠️ No debes")
+                user_state.clear()
                 return
 
-            mes_actual = obtener_mes_actual()
-            total_general = 0
+            if user_state["monto"] > deuda:
+                await query.edit_message_text(f"⚠️ Excede (${deuda})")
+                return
 
-            mensaje = f"📊 Resumen de {mes_actual}\n\n"
+            ws_pag.append_row([
+                datetime.now().strftime("%Y-%m-%d"),
+                tarjeta,
+                user_state["monto"]
+            ])
 
-            for tarjeta in tarjetas:
-                try:
-                    worksheet = client.open("gastos-bot").worksheet(tarjeta)
+            user_state.clear()
+            await query.edit_message_text("💸 Pago guardado")
+            return
+        tarjeta = tarjeta.strip().upper()
+        # ===== GUARDAR MOVIMIENTO =====
+        if user_state.get("estado") == "tarjeta":
+            ws_mov.append_row([
+                datetime.now().strftime("%Y-%m-%d"),
+                tarjeta,
+                user_state["monto"],
+                user_state["tipo"],
+                user_state["meses"]
+            ])
 
-                    headers = worksheet.row_values(3)
-                    headers_limpios = [h.strip().upper() for h in headers]
+            user_state.clear()
+            await query.edit_message_text("✅ Guardado")
+            return
 
-                    if mes_actual not in headers_limpios:
-                        continue
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
 
-                    col_index = headers_limpios.index(mes_actual) + 1
+    if user_state:
 
-                    total_cell = worksheet.cell(4, col_index).value
+        if user_state.get("estado") == "tipo":
+            if text == "1":
+                user_state.update({"tipo": "CONTADO", "meses": 1, "estado": "tarjeta"})
+                await update.message.reply_text("Selecciona tarjeta:", reply_markup=teclado_tarjetas())
+                return
 
-                    total_tarjeta = convertir_a_float(total_cell)
+            elif text == "2":
+                user_state.update({"tipo": "MSI", "estado": "meses"})
+                await update.message.reply_text("Meses:")
+                return
 
-                    if total_tarjeta > 0:
-                        mensaje += f"{tarjeta}: ${round(total_tarjeta, 2)}\n"
-                        total_general += total_tarjeta
+        elif user_state.get("estado") == "meses":
+            try:
+                user_state["meses"] = int(text)
+                user_state["estado"] = "tarjeta"
+                await update.message.reply_text("Selecciona tarjeta:", reply_markup=teclado_tarjetas())
+            except:
+                await update.message.reply_text("❌ número inválido")
+            return
 
-                except:
-                    continue
+    try:
+        monto = float(text)
+        user_state.update({"monto": monto, "estado": "tipo"})
+        await update.message.reply_text("1 Contado\n2 MSI")
+    except:
+        await update.message.reply_text("❌ manda un número")
 
-            mensaje += f"\n💰 Total general: ${round(total_general, 2)}"
+async def comando_invalido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        await update.message.reply_text("❌ Comando no válido")
 
-            await update.message.reply_text(mensaje)
+# ================= MAIN =================
 
-        except Exception as e:
-            await update.message.reply_text("❌ Error al generar resumen")
-            print(e)
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(get_token()).build()
 
-    # ---------------- UTIL ----------------
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("resumen", resumen))
+    app.add_handler(CommandHandler("pagar", pagar))
 
-    def convertir_a_float(valor):
-        if not valor:
-            return 0
+    app.add_handler(CallbackQueryHandler(botones))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(MessageHandler(filters.COMMAND & filters.TEXT, comando_invalido))
 
-        valor = str(valor).strip()
-
-        if valor in ["-", "$ -", "$ -   "]:
-            return 0
-
-        valor = re.sub(r"[^\d,.-]", "", valor)
-        valor = valor.replace(".", "").replace(",", ".")
-
-        try:
-            return float(valor)
-        except:
-            return 0
-
-    # ---------------- MAIN ----------------
-
-    if __name__ == "__main__":
-        TOKEN = get_token()
-
-        app = ApplicationBuilder().token(TOKEN).build()
-
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("resumen", resumen))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        print("🚀 Bot corriendo...")
-        app.run_polling()
-
-except Exception as e:
-    print("💥 ERROR CRÍTICO:")
-    traceback.print_exc()
+    print("🚀 Bot corriendo...")
+    app.run_polling()
