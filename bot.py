@@ -208,7 +208,12 @@ def calcular_proximo():
 
 def teclado_tarjetas():
     tarjetas = list(get_tarjetas().keys())
-    keyboard = [[InlineKeyboardButton(t, callback_data=f"tarjeta|{t}")]]
+
+    keyboard = [
+        [InlineKeyboardButton(t, callback_data=f"tarjeta|{t}")]
+        for t in tarjetas
+    ]
+
     return InlineKeyboardMarkup(keyboard)
 
 # ================= BOT =================
