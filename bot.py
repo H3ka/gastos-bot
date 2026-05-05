@@ -23,6 +23,11 @@ ws_mov = sheet.worksheet("MOVIMIENTOS")
 ws_pag = sheet.worksheet("PAGOS")
 ws_tar = sheet.worksheet("TARJETAS")
 
+# ================= HELPERS =================
+
+def norm(x):
+    return x.strip().upper()
+
 # ================= STATE =================
 
 user_state = {}
@@ -34,16 +39,38 @@ def get_tarjetas():
     data = {}
 
     for r in rows:
-        data[r[0].strip().upper()] = {
+        data[norm(r[0])] = {
             "corte": int(r[1]),
             "pago": int(r[2])
         }
 
     return data
 
-# ================= CICLO BANCARIO REAL =================
+# ================= CICLO =================
 
-def obtener_corte_actual(tarjeta, tarjetas):
+def rango_ciclo(tarjeta, tarjetas):
+    hoy = datetime.now().date()
+    dia = tarjetas[tarjeta]["corte"]
+
+    if hoy.day >= dia:
+        ultimo = datetime(hoy.year, hoy.month, dia).date()
+    else:
+        if hoy.month == 1:
+            ultimo = datetime(hoy.year - 1, 12, dia).date()
+        else:
+            ultimo = datetime(hoy.year, hoy.month - 1, dia).date()
+
+    if ultimo.month == 12:
+        siguiente = datetime(ultimo.year + 1, 1, dia).date()
+    else:
+        siguiente = datetime(ultimo.year, ultimo.month + 1, dia).date()
+
+    inicio = ultimo + timedelta(days=1)
+    fin = siguiente
+
+    return inicio, fin
+
+def corte_actual(tarjeta, tarjetas):
     hoy = datetime.now().date()
     dia = tarjetas[tarjeta]["corte"]
 
@@ -56,44 +83,43 @@ def obtener_corte_actual(tarjeta, tarjetas):
             return datetime(hoy.year, hoy.month - 1, dia).date()
 
 
-def obtener_corte_anterior(corte_actual):
-    if corte_actual.month == 1:
-        return corte_actual.replace(year=corte_actual.year - 1, month=12)
+def corte_anterior(corte):
+    if corte.month == 1:
+        return corte.replace(year=corte.year - 1, month=12)
     else:
-        return corte_actual.replace(month=corte_actual.month - 1)
+        return corte.replace(month=corte.month - 1)
 
 
-def rango_ciclo(tarjeta, tarjetas):
-    hoy = datetime.now().date()
-    dia_corte = tarjetas[tarjeta]["corte"]
+def rango_ciclo_cerrado(tarjeta, tarjetas):
+    c_actual = corte_actual(tarjeta, tarjetas)
+    c_anterior = corte_anterior(c_actual)
 
-    # ---------- último corte ----------
-    if hoy.day >= dia_corte:
-        ultimo_corte = datetime(hoy.year, hoy.month, dia_corte).date()
-    else:
-        if hoy.month == 1:
-            ultimo_corte = datetime(hoy.year - 1, 12, dia_corte).date()
-        else:
-            ultimo_corte = datetime(hoy.year, hoy.month - 1, dia_corte).date()
+    inicio = c_anterior + timedelta(days=1)  # día después del corte anterior
+    fin = c_actual                           # día de corte actual (exclusivo)
 
-    # ---------- siguiente corte ----------
-    if ultimo_corte.month == 12:
-        siguiente_corte = datetime(ultimo_corte.year + 1, 1, dia_corte).date()
-    else:
-        siguiente_corte = datetime(ultimo_corte.year, ultimo_corte.month + 1, dia_corte).date()
+    return inicio, fin, c_actual
 
-    inicio = ultimo_corte + timedelta(days=1)
-    fin = siguiente_corte
 
-    return inicio, fin
+def fecha_limite_cerrado(tarjeta, tarjetas):
+    c_actual = corte_actual(tarjeta, tarjetas)
+    return c_actual + timedelta(days=tarjetas[tarjeta]["pago"])
+
 
 def fecha_limite(tarjeta, tarjetas):
-    corte = obtener_corte_actual(tarjeta, tarjetas)
+    hoy = datetime.now().date()
+    dia = tarjetas[tarjeta]["corte"]
 
-    # 👉 mover al siguiente ciclo
-    siguiente_corte = corte + relativedelta(months=1)
+    if hoy.day >= dia:
+        corte = datetime(hoy.year, hoy.month, dia).date()
+    else:
+        if hoy.month == 1:
+            corte = datetime(hoy.year - 1, 12, dia).date()
+        else:
+            corte = datetime(hoy.year, hoy.month - 1, dia).date()
 
-    return siguiente_corte + timedelta(days=tarjetas[tarjeta]["pago"])
+    siguiente = corte + relativedelta(months=1)
+
+    return siguiente + timedelta(days=tarjetas[tarjeta]["pago"])
 
 # ================= DATA =================
 
@@ -105,16 +131,15 @@ def get_movimientos():
         try:
             data.append({
                 "fecha": datetime.strptime(r[0], "%Y-%m-%d").date(),
-                "tarjeta": r[1].strip().upper(),
+                "tarjeta": norm(r[1]),
                 "monto": float(r[2].replace(",", ".")),
-                "tipo": r[3],
+                "tipo": norm(r[3]),
                 "meses": int(r[4])
             })
         except:
             continue
 
     return data
-
 
 def get_pagos():
     rows = ws_pag.get_all_values()[1:]
@@ -125,7 +150,7 @@ def get_pagos():
             data.append({
                 "fecha": datetime.strptime(r[0], "%Y-%m-%d").date(),
                 "tarjeta": r[1].strip().upper(),
-                "monto": float(r[2].replace(",", ".")),
+                "monto": float(r[2].replace(",", "."))
             })
         except:
             continue
@@ -142,29 +167,31 @@ def calcular_resumen():
     resultado = {}
 
     for t in tarjetas:
-        inicio, fin = rango_ciclo(t, tarjetas)
+        inicio, fin, corte = rango_ciclo_cerrado(t, tarjetas)
 
         total = 0
 
+        # ===== CARGOS =====
         for m in movs:
             if m["tarjeta"] != t:
                 continue
 
             # CONTADO
             if m["tipo"] == "CONTADO":
-                if inicio <= m["fecha"] <= fin:
+                if inicio <= m["fecha"] < fin:
                     total += m["monto"]
 
-            # MSI REAL
+            # MSI (incluye MSI que iniciaron antes pero siguen activos)
             else:
                 mensual = m["monto"] / m["meses"]
 
                 for i in range(m["meses"]):
                     fecha_msi = m["fecha"] + relativedelta(months=i)
 
-                    if inicio <= fecha_msi <= fin:
+                    if inicio <= fecha_msi < fin:
                         total += mensual
 
+        # ===== PAGOS DEL MISMO CICLO =====
         pagado = sum(
             p["monto"] for p in pagos
             if p["tarjeta"] == t and inicio <= p["fecha"] < fin
@@ -177,12 +204,56 @@ def calcular_resumen():
                 "total": round(total, 2),
                 "pagado": round(pagado, 2),
                 "pendiente": round(pendiente, 2),
-                "fecha": fecha_limite(t, tarjetas)
+                "fecha": fecha_limite_cerrado(t, tarjetas),
+                "corte": corte
             }
 
     return resultado
 
-# ================= UI BOTONES =================
+def calcular_proximo_corte():
+    tarjetas = get_tarjetas()
+    movs = get_movimientos()
+    pagos = get_pagos()
+
+    resultado = {}
+
+    for t in tarjetas:
+        inicio, fin = rango_ciclo(t, tarjetas)  # 👈 ciclo actual
+
+        total = 0
+
+        for m in movs:
+            if m["tarjeta"] != t:
+                continue
+
+            if m["tipo"] == "CONTADO":
+                if inicio <= m["fecha"] < fin:
+                    total += m["monto"]
+
+            else:
+                mensual = m["monto"] / m["meses"]
+
+                for i in range(m["meses"]):
+                    fecha_msi = m["fecha"] + relativedelta(months=i)
+
+                    if inicio <= fecha_msi < fin:
+                        total += mensual
+
+        pagado = sum(
+            p["monto"] for p in pagos
+            if p["tarjeta"] == t and inicio <= p["fecha"] < fin
+        )
+
+        pendiente = max(0, total - pagado)
+
+        if pendiente > 0:
+            resultado[t] = {
+                "pendiente": round(pendiente, 2)
+            }
+
+    return resultado
+
+# ================= UI =================
 
 def teclado_tarjetas():
     tarjetas = list(get_tarjetas().keys())
@@ -209,26 +280,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💸 Mándame un monto")
 
 async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = calcular_resumen()
+    cerrado = calcular_resumen()
+    proximo = calcular_proximo_corte()
 
-    if not data:
-        await update.message.reply_text("Sin movimientos")
-        return
+    msg = "📊 Estado de cuenta (cerrado)\n\n"
+    total_cerrado = 0
 
-    msg = "📊 Resumen\n\n"
-    total = 0
+    for t, d in cerrado.items():
+        msg += (
+            f"{t}\n"          
+            f"Pendiente: ${d['pendiente']}\n"
+            f"Fecha de corte: {d['fecha']}\n\n"
+        )
+        total_cerrado += d["pendiente"]
 
-    for t, d in data.items():
+    msg += f"💰 Total cerrado: ${round(total_cerrado,2)}\n\n"
+
+    msg += "📈 Próximo corte (en curso)\n\n"
+    total_prox = 0
+
+    for t, d in proximo.items():
         msg += (
             f"{t}\n"
-            f"Total: ${d['total']}\n"
-            f"Pagado: ${d['pagado']}\n"
             f"Pendiente: ${d['pendiente']}\n"
-            f"Límite: {d['fecha']}\n\n"
+            f"Fecha de corte: {d['fecha']}\n\n"
         )
-        total += d["pendiente"]
+        total_prox += d["pendiente"]
 
-    msg += f"💰 Total: ${round(total, 2)}"
+    msg += f"💸 Total próximo: ${round(total_prox,2)}"
 
     await update.message.reply_text(msg)
 
@@ -254,22 +333,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data.split("|")
 
     if data[0] == "tarjeta":
-        tarjeta = data[1]
+        tarjeta = norm(data[1])
 
         # ===== PAGO =====
         if user_state.get("estado") == "pago":
-            resumen = calcular_resumen()
-            deuda = resumen.get(tarjeta, {}).get("pendiente", 0)
-
-            if deuda <= 0:
-                await query.edit_message_text("⚠️ No debes")
-                user_state.clear()
-                return
-
-            if user_state["monto"] > deuda:
-                await query.edit_message_text(f"⚠️ Excede (${deuda})")
-                return
-
             ws_pag.append_row([
                 datetime.now().strftime("%Y-%m-%d"),
                 tarjeta,
@@ -279,7 +346,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_state.clear()
             await query.edit_message_text("💸 Pago guardado")
             return
-        tarjeta = tarjeta.strip().upper()
+
         # ===== GUARDAR MOVIMIENTO =====
         if user_state.get("estado") == "tarjeta":
             ws_mov.append_row([
@@ -333,7 +400,14 @@ async def comando_invalido(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= MAIN =================
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(get_token()).build()
+    app = (
+        ApplicationBuilder()
+        .token(get_token())
+        .read_timeout(30)
+        .write_timeout(30)
+        .connect_timeout(30)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", resumen))
