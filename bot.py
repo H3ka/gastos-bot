@@ -277,7 +277,10 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data[0] == "tarjeta":
         tarjeta = data[1]
 
+ # ================= REGISTRAR PAGO =================
+
         if user_state.get("estado") == "pago":
+
             cerrado = calcular_cerrado()
             deuda = cerrado.get(tarjeta, {}).get("pendiente", 0)
 
@@ -297,18 +300,112 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
             user_state.clear()
+
             await query.edit_message_text("💸 Pago registrado")
+            return
+
+    # ================= REGISTRAR GASTO =================
+
+        if user_state.get("estado") == "tarjeta":
+
+            ws_mov.append_row([
+                datetime.now().strftime("%Y-%m-%d"),
+                tarjeta,
+                user_state["monto"],
+                user_state["tipo"],
+                user_state["meses"]
+            ])
+
+            monto = user_state["monto"]
+
+            user_state.clear()
+
+            await query.edit_message_text(
+                f"✅ Gasto registrado\n💳 {tarjeta}\n💰 ${monto}"
+            )
+
             return
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    try:
-        monto = float(text)
-        user_state.update({"monto": monto, "estado": "tipo"})
-        await update.message.reply_text("1 Contado\n2 MSI")
-    except:
-        await update.message.reply_text("❌ Ingresa un número válido")
+    estado = user_state.get("estado")
+
+    # ================= ESPERANDO MONTO =================
+
+    if estado is None:
+        try:
+            monto = float(text)
+
+            user_state["monto"] = monto
+            user_state["estado"] = "tipo"
+
+            await update.message.reply_text(
+                "Selecciona tipo:\n\n1️⃣ Contado\n2️⃣ MSI"
+            )
+
+        except:
+            await update.message.reply_text("❌ Ingresa un monto válido")
+
+        return
+
+    # ================= ESPERANDO TIPO =================
+
+    if estado == "tipo":
+
+        if text == "1":
+            user_state["tipo"] = "CONTADO"
+            user_state["meses"] = 1
+            user_state["estado"] = "tarjeta"
+
+            await update.message.reply_text(
+                "Selecciona tarjeta:",
+                reply_markup=teclado_tarjetas()
+            )
+
+            return
+
+        elif text == "2":
+            user_state["tipo"] = "MSI"
+            user_state["estado"] = "meses"
+
+            await update.message.reply_text(
+                "¿A cuántos meses?"
+            )
+
+            return
+
+        else:
+            await update.message.reply_text(
+                "❌ Escribe 1 para Contado o 2 para MSI"
+            )
+
+            return
+
+    # ================= ESPERANDO MESES =================
+
+    if estado == "meses":
+
+        try:
+            meses = int(text)
+
+            if meses <= 0:
+                raise Exception()
+
+            user_state["meses"] = meses
+            user_state["estado"] = "tarjeta"
+
+            await update.message.reply_text(
+                "Selecciona tarjeta:",
+                reply_markup=teclado_tarjetas()
+            )
+
+        except:
+            await update.message.reply_text(
+                "❌ Ingresa un número válido de meses"
+            )
+
+        return
 
 async def comando_invalido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
