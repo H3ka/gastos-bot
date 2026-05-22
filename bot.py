@@ -514,6 +514,8 @@ async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     gastos = calcular_gastos_reales()
 
+    saldos = calcular_saldos()
+
     gasto_real = gastos["total"]
 
     disponible = sueldo - deuda - gastos_fijos - ahorro - gasto_real
@@ -528,6 +530,8 @@ async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📈 Ahorro objetivo: ${round(ahorro,2)}\n"
         f"💳 Próximos pagos: ${round(deuda,2)}\n\n"
         f"💵 Efectivo/Débito: ${round(gasto_real,2)}\n\n"
+        f"🏦 Saldo débito: ${saldos['debito']}\n"
+        f"💵 Saldo efectivo: ${saldos['efectivo']}\n\n"
         "━━━━━━━━━━━━━━\n\n"
         f"💸 Disponible real: ${round(disponible,2)}\n"
         f"📅 Disponible diario: ${round(diario,2)}\n\n"
@@ -539,6 +543,28 @@ async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "✅ Flujo saludable"
 
     await update.message.reply_text(msg)
+
+def calcular_saldos():
+    config = get_config()
+    movs = get_movimientos()
+
+    saldo_debito = config.get("saldo_debito", 0)
+    saldo_efectivo = config.get("saldo_efectivo", 0)
+
+    for m in movs:
+
+        # DEBITO
+        if m["tarjeta"] == "DEBITO":
+            saldo_debito -= m["monto"]
+
+        # EFECTIVO
+        elif m["tarjeta"] == "EFECTIVO":
+            saldo_efectivo -= m["monto"]
+
+    return {
+        "debito": round(saldo_debito, 2),
+        "efectivo": round(saldo_efectivo, 2)
+    }
 
 # ================= MAIN =================
 
