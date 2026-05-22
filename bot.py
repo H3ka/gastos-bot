@@ -101,7 +101,7 @@ def get_movimientos():
                 "fecha": parse_date(r[0]),
                 "tarjeta": r[1].strip().upper(),
                 "monto": float(r[2].replace(",", ".")),
-                "tipo": r[3],
+                "tipo":  r[3].strip().upper(),
                 "meses": int(r[4])
             })
         except:
@@ -149,7 +149,7 @@ def calcular_cerrado():
             if m["tipo"] == "CONTADO":
                 if inicio <= m["fecha"] < fin:
                     total += m["monto"]
-            else:
+            elif m["tipo"] == "MSI":
                 mensual = m["monto"] / m["meses"]
                 for i in range(m["meses"]):
                     fecha_msi = m["fecha"] + relativedelta(months=i)
@@ -190,7 +190,7 @@ def calcular_proximo():
             if m["tipo"] == "CONTADO":
                 if inicio <= m["fecha"] < fin:
                     total += m["monto"]
-            else:
+            elif m["tipo"] == "MSI":
                 mensual = m["monto"] / m["meses"]
                 for i in range(m["meses"]):
                     fecha_msi = m["fecha"] + relativedelta(months=i)
