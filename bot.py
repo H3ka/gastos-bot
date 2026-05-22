@@ -97,14 +97,24 @@ def get_movimientos():
 
     for r in rows:
         try:
+            tipo = str(r[3]).strip().upper()
+
+            # normalizar
+            if "MSI" in tipo:
+                tipo = "MSI"
+            else:
+                tipo = "CONTADO"
+
             data.append({
-                "fecha": parse_date(r[0]),
+                "fecha": datetime.strptime(r[0], "%Y-%m-%d").date(),
                 "tarjeta": r[1].strip().upper(),
-                "monto": float(r[2].replace(",", ".")),
-                "tipo":  r[3].strip().upper(),
-                "meses": int(r[4])
+                "monto": float(str(r[2]).replace(",", ".")),
+                "tipo": tipo,
+                "meses": int(float(r[4]))
             })
-        except:
+
+        except Exception as e:
+            print("ERROR MOV:", r, e)
             continue
 
     return data
