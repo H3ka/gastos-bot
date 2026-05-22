@@ -61,22 +61,56 @@ def siguiente_corte(tarjeta, tarjetas):
     return obtener_corte_actual(tarjeta, tarjetas) + relativedelta(months=1)
 
 def rango_ciclo_cerrado(tarjeta, tarjetas):
-    corte = obtener_corte_actual(tarjeta, tarjetas)
-    corte_anterior = obtener_corte_anterior(corte)
+    hoy = datetime.now().date()
 
-    inicio = corte_anterior + timedelta(days=1)
-    fin = corte
+    dia_corte = tarjetas[tarjeta]["corte"]
 
-    return inicio, fin, corte
+    # último corte
+    if hoy.day >= dia_corte:
+        corte_actual = datetime(hoy.year, hoy.month, dia_corte).date()
+    else:
+        if hoy.month == 1:
+            corte_actual = datetime(hoy.year - 1, 12, dia_corte).date()
+        else:
+            corte_actual = datetime(hoy.year, hoy.month - 1, dia_corte).date()
+
+    # corte anterior
+    if corte_actual.month == 1:
+        corte_anterior = datetime(corte_actual.year - 1, 12, dia_corte).date()
+    else:
+        corte_anterior = datetime(corte_actual.year, corte_actual.month - 1, dia_corte).date()
+
+    # 🔥 ESTE ES EL FIX
+    inicio = corte_anterior
+    fin = corte_actual - timedelta(days=1)
+
+    return inicio, fin, corte_actual
 
 def rango_ciclo_proximo(tarjeta, tarjetas):
-    corte = obtener_corte_actual(tarjeta, tarjetas)
-    sig = corte + relativedelta(months=1)
+    hoy = datetime.now().date()
 
-    inicio = corte + timedelta(days=1)
-    fin = sig
+    dia_corte = tarjetas[tarjeta]["corte"]
 
-    return inicio, fin, sig
+    # corte actual
+    if hoy.day >= dia_corte:
+        corte_actual = datetime(hoy.year, hoy.month, dia_corte).date()
+    else:
+        if hoy.month == 1:
+            corte_actual = datetime(hoy.year - 1, 12, dia_corte).date()
+        else:
+            corte_actual = datetime(hoy.year, hoy.month - 1, dia_corte).date()
+
+    # siguiente corte
+    if corte_actual.month == 12:
+        siguiente = datetime(corte_actual.year + 1, 1, dia_corte).date()
+    else:
+        siguiente = datetime(corte_actual.year, corte_actual.month + 1, dia_corte).date()
+
+    # 🔥 FIX
+    inicio = corte_actual
+    fin = siguiente - timedelta(days=1)
+
+    return inicio, fin, siguiente
 
 def fecha_limite_cerrado(tarjeta, tarjetas):
     corte = obtener_corte_actual(tarjeta, tarjetas)
@@ -157,13 +191,13 @@ def calcular_cerrado():
 
             # 🔥 TODO ya es date → comparación segura
             if m["tipo"] == "CONTADO":
-                if inicio <= m["fecha"] < fin:
+                if inicio <= m["fecha"] <= fin:
                     total += m["monto"]
             elif m["tipo"] == "MSI":
                 mensual = m["monto"] / m["meses"]
                 for i in range(m["meses"]):
                     fecha_msi = m["fecha"] + relativedelta(months=i)
-                    if inicio <= fecha_msi < fin:
+                    if inicio <= fecha_msi <= fin:
                         total += mensual
 
         pagado = sum(
@@ -198,13 +232,13 @@ def calcular_proximo():
                 continue
 
             if m["tipo"] == "CONTADO":
-                if inicio <= m["fecha"] < fin:
+                if inicio <= m["fecha"] <= fin:
                     total += m["monto"]
             elif m["tipo"] == "MSI":
                 mensual = m["monto"] / m["meses"]
                 for i in range(m["meses"]):
                     fecha_msi = m["fecha"] + relativedelta(months=i)
-                    if inicio <= fecha_msi < fin:
+                    if inicio <= fecha_msi <= fin:
                         total += mensual
 
         if total > 0:
