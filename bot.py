@@ -22,6 +22,7 @@ sheet = client.open(get_sheet())
 ws_mov = sheet.worksheet("MOVIMIENTOS")
 ws_pag = sheet.worksheet("PAGOS")
 ws_tar = sheet.worksheet("TARJETAS")
+ws_config = sheet.worksheet("CONFIG")
 
 # ================= STATE =================
 
@@ -38,6 +39,19 @@ def get_tarjetas():
             "corte": int(r[1]),
             "pago": int(r[2])
         }
+
+    return data
+
+def get_config():
+    rows = ws_config.get_all_values()[1:]
+
+    data = {}
+
+    for r in rows:
+        try:
+            data[r[0].strip()] = float(r[1])
+        except:
+            data[r[0].strip()] = 0
 
     return data
 
@@ -178,7 +192,12 @@ def calcular_cerrado():
 
     resultado = {}
 
+    IGNORAR = ["EFECTIVO", "DEBITO"]
+
     for t in tarjetas:
+        if t in IGNORAR:
+            continue
+
         inicio, fin, corte = rango_ciclo_cerrado(t, tarjetas)
         corte_anterior = obtener_corte_anterior(corte)
         limite = fecha_limite_cerrado(t, tarjetas)
@@ -222,7 +241,11 @@ def calcular_proximo():
 
     resultado = {}
 
+    IGNORAR = ["EFECTIVO", "DEBITO"]
+    
     for t in tarjetas:
+        if t in IGNORAR:
+            continue
         inicio, fin, corte = rango_ciclo_proximo(t, tarjetas)
 
         total = 0
@@ -249,6 +272,25 @@ def calcular_proximo():
             }
 
     return resultado
+
+def calcular_gastos_reales():
+    movs = get_movimientos()
+
+    efectivo = 0
+    debito = 0
+
+    for m in movs:
+        if m["tarjeta"] == "EFECTIVO":
+            efectivo += m["monto"]
+
+        elif m["tarjeta"] == "DEBITO":
+            debito += m["monto"]
+
+    return {
+        "efectivo": round(efectivo, 2),
+        "debito": round(debito, 2),
+        "total": round(efectivo + debito, 2)
+    }
 
 # ================= UI =================
 
@@ -457,6 +499,47 @@ async def comando_invalido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text("❌ Comando no válido")
 
+async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config = get_config()
+
+    sueldo = config.get("sueldo", 0)
+    gastos_fijos = config.get("gastos_fijos", 0)
+    ahorro = config.get("ahorro_objetivo", 0)
+
+    proximo = calcular_proximo()
+
+    deuda = sum(
+        d["pendiente"]
+        for d in proximo.values()
+    )
+    gastos = calcular_gastos_reales()
+
+    gasto_real = gastos["total"]
+
+    disponible = sueldo - deuda - gastos_fijos - ahorro - gasto_real
+
+    dias_restantes = 30
+    diario = disponible / dias_restantes
+
+    msg = (
+        "💰 Flujo mensual\n\n"
+        f"💵 Sueldo: ${round(sueldo,2)}\n"
+        f"🏠 Gastos fijos: ${round(gastos_fijos,2)}\n"
+        f"📈 Ahorro objetivo: ${round(ahorro,2)}\n"
+        f"💳 Próximos pagos: ${round(deuda,2)}\n\n"
+        f"💵 Efectivo/Débito: ${round(gasto_real,2)}\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        f"💸 Disponible real: ${round(disponible,2)}\n"
+        f"📅 Disponible diario: ${round(diario,2)}\n\n"
+    )
+
+    if disponible < 0:
+        msg += "⚠️ Estás en déficit"
+    else:
+        msg += "✅ Flujo saludable"
+
+    await update.message.reply_text(msg)
+
 # ================= MAIN =================
 
 if __name__ == "__main__":
@@ -465,6 +548,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("resumen", resumen))
     app.add_handler(CommandHandler("pagar", pagar))
+    app.add_handler(CommandHandler("flujo", flujo))
 
     app.add_handler(CallbackQueryHandler(botones))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
