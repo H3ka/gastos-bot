@@ -1,3 +1,5 @@
+from multiprocessing import context
+
 import gspread
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -424,5 +426,10 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.add_handler(MessageHandler(filters.COMMAND, comando_invalido))
 
+
+    async def error_handler(update, context):
+        print(context.error)
+
+    app.add_error_handler(error_handler)
     print("Bot iniciado...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
