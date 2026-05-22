@@ -520,6 +520,8 @@ async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     disponible = sueldo - deuda - gastos_fijos - ahorro - gasto_real
 
+    liquidez = saldos["debito"] + saldos["efectivo"]
+
     dias_restantes = 30
     diario = disponible / dias_restantes
 
@@ -534,6 +536,7 @@ async def flujo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 Saldo efectivo: ${saldos['efectivo']}\n\n"
         "━━━━━━━━━━━━━━\n\n"
         f"💸 Disponible real: ${round(disponible,2)}\n"
+        f"💵 Liquidez actual: ${round(liquidez,2)}\n"
         f"📅 Disponible diario: ${round(diario,2)}\n\n"
     )
 
